@@ -1,0 +1,28 @@
+@page { size: A4; }
+* { box-sizing: border-box; }
+body { font: 11pt/1.5 Arial, sans-serif; color: #172b3a; max-width: 680px; margin: 30px auto; }
+h1 { font-size: 26pt; color: #005b85; border-bottom: 3px solid #00a6bf; padding-bottom: 14px; }
+h2 { font-size: 20pt; color: #005b85; break-before: page; }
+h3 { font-size: 15pt; margin-top: 24px; }
+h4 { font-size: 12pt; color: #005b85; }
+h1,h2,h3,h4 { break-after: avoid; }
+p,li { orphans: 3; widows: 3; }
+img { max-width: 100%; height: auto; object-fit: contain; }
+figure { margin: 16px 0; break-inside: avoid; }
+figure > img { max-height: 225mm; display: block; margin: auto; }
+.diagram { position: relative; overflow: hidden; }
+.dynamic-text-item { position: absolute; font: 11px/1.1 Arial,sans-serif; text-align: center; }
+.dynamic-text-item p { margin: 0; }
+.poster { max-width: 500px; max-height: 260px; }
+table { border-collapse: collapse; width: 100%; table-layout: auto; margin: 16px 0; font-size: 10pt; }
+th,td { border: 1px solid #becbd4; padding: 8px; overflow-wrap: anywhere; }
+th { background: #e9f3f8; text-align: left; }
+tr { break-inside: avoid; }
+pre { background: #eff3f5; padding: 12px; white-space: pre-wrap; overflow-wrap: anywhere; font: 9pt/1.45 monospace; }
+a { color: #00628d; overflow-wrap: anywhere; }
+.source,.caption { color: #526775; font-size: 9pt; }
+.notice { border-left: 3px solid #d1952f; padding-left: 12px; color: #635027; }
+/* Course intro text is white because the online player has dark backdrops. */
+.component span[style*="color"] { color: inherit !important; }
+.component [style*="background"] { background: transparent !important; }
+@media print { body { margin: 0; } }

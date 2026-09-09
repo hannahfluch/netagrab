@@ -1,0 +1,6 @@
+.session/
+output/
+__pycache__/
+.env
+result
+session.txt
