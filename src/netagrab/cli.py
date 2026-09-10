@@ -1,4 +1,5 @@
 """Download NetAcad courses as PDF, Markdown, or structured JSON."""
+
 import argparse
 import hashlib
 import json
@@ -17,9 +18,15 @@ from .exporter import FORMATS, Exporter, load_session, discover, write_json, sav
 def course_id(url):
     parsed = urlparse(url)
     ids = parse_qs(parsed.query).get("id", [])
-    if (parsed.scheme != "https" or parsed.hostname not in {"netacad.com", "www.netacad.com"}
-            or parsed.path.rstrip("/") != "/launch" or len(ids) != 1 or not ids[0].strip()
-            or parsed.username or parsed.password):
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname not in {"netacad.com", "www.netacad.com"}
+        or parsed.path.rstrip("/") != "/launch"
+        or len(ids) != 1
+        or not ids[0].strip()
+        or parsed.username
+        or parsed.password
+    ):
         raise ValueError("Use a NetAcad course launch link: https://www.netacad.com/launch?id=...")
     return ids[0]
 
@@ -34,8 +41,14 @@ def parse_args(argv=None):
     parser.add_argument("--offline", action="store_true", help="Rebuild from downloaded sources and assets")
     parser.add_argument("--modules", help="Comma-separated module numbers for a partial export")
     parser.add_argument("--no-videos", action="store_true", help="Download captions and posters, skip video files")
-    parser.add_argument("--format", "--formats", nargs="+", choices=(*FORMATS, "all"), default=["pdf"],
-                        help="Output format(s): pdf (default), markdown, json (structured AI input), or all")
+    parser.add_argument(
+        "--format",
+        "--formats",
+        nargs="+",
+        choices=(*FORMATS, "all"),
+        default=["pdf"],
+        help="Output format(s): pdf (default), markdown, json (structured AI input), or all",
+    )
     args = parser.parse_args(argv)
     if args.course_url is not None and args.url is not None:
         parser.error("Pass the course URL either as an argument or with --url, not both")
@@ -90,16 +103,20 @@ def run():
                 if manifest_path.exists():
                     previous = json.loads(manifest_path.read_text())
                     if any(previous.get(key) != manifest.get(key) for key in ("content_base", "language")):
-                        raise ValueError("This folder contains another course edition or language. Choose a different --output folder.")
+                        raise ValueError(
+                            "This folder contains another course edition or language. Choose a different --output folder."
+                        )
                 write_json(manifest_path, manifest)
                 save_session(context)
             exporter = Exporter(args.output, manifest, browser, page, not args.no_videos, formats=formats)
             if args.offline:
+
                 def cached_only(url, path):
                     if path.exists() and path.stat().st_size:
                         return path
                     exporter.issue("missing_cached_asset", clean_url(url))
                     return None
+
                 exporter.fetch = cached_only
             modules = manifest["modules"]
             if args.modules:
@@ -116,8 +133,8 @@ def run():
             for fmt in FORMATS:
                 if fmt in formats:
                     extension = "md" if fmt == "markdown" else fmt
-                    print(f'{fmt}: {args.output / ("course." + extension)}')
-            print(f'Offline HTML: {args.output / "index.html"}\nCoverage report: {args.output / "report.json"}')
+                    print(f"{fmt}: {args.output / ('course.' + extension)}")
+            print(f"Offline HTML: {args.output / 'index.html'}\nCoverage report: {args.output / 'report.json'}")
         finally:
             if browser:
                 browser.close()
@@ -129,7 +146,10 @@ def main():
         run()
         return 0
     except EOFError:
-        print("Input ended before login details were entered. Run interactively to enter your credentials.", file=sys.stderr)
+        print(
+            "Input ended before login details were entered. Run interactively to enter your credentials.",
+            file=sys.stderr,
+        )
         return 1
     except (RuntimeError, ValueError, FileNotFoundError, PlaywrightTimeout) as exc:
         print(f"Export stopped: {exc}", file=sys.stderr)

@@ -1,4 +1,5 @@
 """Export an enrolled NetAcad course for offline study using Chromium."""
+
 from __future__ import annotations
 
 import getpass
@@ -33,8 +34,10 @@ def to_markdown(markup):
     for link in soup.select('a[href$=".html"]'):
         if re.fullmatch(r"(?:module-\d+|index)\.html", link["href"]):
             link["href"] = link["href"][:-5] + ".md"
-    return markdownify(str(soup), heading_style="ATX", bullets="-",
-                       keep_inline_images_in=["td", "th"], wrap=False).strip() + "\n"
+    return (
+        markdownify(str(soup), heading_style="ATX", bullets="-", keep_inline_images_in=["td", "th"], wrap=False).strip()
+        + "\n"
+    )
 
 
 def text_fence(text):
@@ -84,14 +87,18 @@ def login(page, context, url, headed=False):
             submitted = True
             deadline = time.monotonic() + 60
         if submitted and page.locator("#input-error, #kc-feedback-text, .alert-error").first.is_visible():
-            raise RuntimeError("Login was rejected. Check your credentials and try again, or use --headed for browser login.")
+            raise RuntimeError(
+                "Login was rejected. Check your credentials and try again, or use --headed for browser login."
+            )
         page.wait_for_timeout(500)
     if headed:
         input("Complete login in Chromium, then press Enter here: ")
         page.locator("#course-outline").wait_for(state="visible", timeout=60000)
         save_session(context)
         return
-    raise RuntimeError("The course did not become available. Check the link and enrollment, or use --headed to complete login/MFA.")
+    raise RuntimeError(
+        "The course did not become available. Check the link and enrollment, or use --headed to complete login/MFA."
+    )
 
 
 def merge_pdfs(entries, destination):
@@ -122,12 +129,12 @@ def transcript(vtt):
         lines = block.splitlines()
         for index, line in enumerate(lines):
             if "-->" in line:
-                cue = " ".join(lines[index + 1:]).strip()
+                cue = " ".join(lines[index + 1 :]).strip()
                 cue = re.sub(r"<\d{2}:\d{2}[^>]*>", "", cue)
                 if cue:
                     cues.append(cue)
                 break
-    return "".join("<p>" + " ".join(cues[i:i + 12]) + "</p>" for i in range(0, len(cues), 12))
+    return "".join("<p>" + " ".join(cues[i : i + 12]) + "</p>" for i in range(0, len(cues), 12))
 
 
 def discover(page, context, url, headed):
@@ -147,7 +154,7 @@ def discover(page, context, url, headed):
     first = page.get_by_role("button", name=modules[0]["title"]).first
     if first.get_attribute("aria-expanded") != "true":
         first.click()
-    section = first.locator('xpath=../..')
+    section = first.locator("xpath=../..")
     section.locator('button[class*="subModuleBtn--"]').first.click()
     deadline = time.monotonic() + 40
     while time.monotonic() < deadline:
@@ -158,8 +165,13 @@ def discover(page, context, url, headed):
             for resource in urls:
                 match = re.match(r"(https://[^?]+/courses/content/)m\d+/([^/]+)/components.json$", resource)
                 if match:
-                    return {"url": url, "modules": modules, "content_base": match[1],
-                            "language": match[2], "outline": labels}
+                    return {
+                        "url": url,
+                        "modules": modules,
+                        "content_base": match[1],
+                        "language": match[2],
+                        "outline": labels,
+                    }
         page.wait_for_timeout(500)
     raise RuntimeError("The course does not expose the supported Adapt module layout.")
 
@@ -216,7 +228,7 @@ class Exporter:
             except (HTTPError, URLError, TimeoutError, ValueError) as exc:
                 if isinstance(exc, HTTPError) and exc.code in (401, 403, 404):
                     break
-                time.sleep(2 ** attempt)
+                time.sleep(2**attempt)
         self.issue("download_failed", clean_url(url))
         return None
 
@@ -251,14 +263,16 @@ class Exporter:
         value = value.replace("{{baseOrigin}}", "https://www.netacad.com")
         value = re.sub(r"<script\b[^>]*>.*?</script>", "", value, flags=re.S | re.I)
         value = re.sub(r'\s+on\w+\s*=\s*("[^"]*"|\x27[^\x27]*\x27)', "", value, flags=re.I)
+
         def attribute(match):
             attr, quote, source = match.groups()
             if attr.lower() == "src" or re.search(r"\.(pdf|pka|pkt|zip|pcapng?|docx)(?:[?#]|$)", source, re.I):
                 local = self.asset(source)
-                return f'{attr}={quote}{html.escape(local, quote=True)}{quote}'
+                return f"{attr}={quote}{html.escape(local, quote=True)}{quote}"
             if source.startswith(("javascript:", "data:text/html")):
                 return 'href="#"'
             return match[0]
+
         return re.sub(r'\b(src|href)\s*=\s*(["\x27])(.*?)\2', attribute, value, flags=re.I)
 
     def graphic(self, graphic):
@@ -269,7 +283,7 @@ class Exporter:
             return ""
         local = self.asset(source)
         alt = html.escape(graphic.get("alt", graphic.get("description", "")))
-        return f'<figure><img src="{local}" alt="{alt}"></figure>' if local else f'<p>Image unavailable: {alt}</p>'
+        return f'<figure><img src="{local}" alt="{alt}"></figure>' if local else f"<p>Image unavailable: {alt}</p>"
 
     def dynamic_graphic(self, c):
         d = c["details"]
@@ -278,35 +292,54 @@ class Exporter:
         uuid = html.escape(d.get("uuid", c["_id"]))
         width, height = map(float, d.get("aspect_ratio", "750/500").split("/"))
         scale = min(1, 680 / width)
-        labels = "".join(f'<div class="dynamic-text-item" id="{html.escape(t.get("class", t.get("id", "")))}">{self.markup(t.get("text", ""))}</div>' for t in d.get("texts", []))
+        labels = "".join(
+            f'<div class="dynamic-text-item" id="{html.escape(t.get("class", t.get("id", "")))}">{self.markup(t.get("text", ""))}</div>'
+            for t in d.get("texts", [])
+        )
         style = f'<link rel="stylesheet" href="{stylesheet}">' if stylesheet else ""
-        return (style + f'<figure class="diagram" style="height:{height*scale}px"><div id="{uuid}">'
-                f'<div id="importID{uuid}" class="dynamic-graphic-display" style="width:{width}px;height:{height}px;transform:scale({scale});transform-origin:top left">'
-                '<div class="dynamic-graphic-content" style="position:relative;width:100%;height:100%">'
-                f'<img style="width:100%;height:100%" src="{image}" alt="{html.escape(c.get("a11y_description", ""), quote=True)}"><div class="dynamic-text">{labels}</div></div></div></div></figure>'
-                + (f'<p class="caption">{self.markup(d["caption"])}</p>' if d.get("caption") else ""))
+        return (
+            style + f'<figure class="diagram" style="height:{height * scale}px"><div id="{uuid}">'
+            f'<div id="importID{uuid}" class="dynamic-graphic-display" style="width:{width}px;height:{height}px;transform:scale({scale});transform-origin:top left">'
+            '<div class="dynamic-graphic-content" style="position:relative;width:100%;height:100%">'
+            f'<img style="width:100%;height:100%" src="{image}" alt="{html.escape(c.get("a11y_description", ""), quote=True)}"><div class="dynamic-text">{labels}</div></div></div></div></figure>'
+            + (f'<p class="caption">{self.markup(d["caption"])}</p>' if d.get("caption") else "")
+        )
 
     def video(self, c):
         result = ""
         for video_id in c.get("videoIds", []):
             metadata_path = self.output / "media" / f"{video_id}.json"
             metadata = json.loads(metadata_path.read_text()) if metadata_path.exists() else None
-            missing = [key for key in ("poster", "captions", "video") if metadata and metadata.get(key) and not (self.output / metadata[key]).exists()]
+            missing = [
+                key
+                for key in ("poster", "captions", "video")
+                if metadata and metadata.get(key) and not (self.output / metadata[key]).exists()
+            ]
             refresh = metadata is None or bool(missing) or (self.videos and not metadata.get("video"))
             if refresh and self.page:
-                query = '''query getVideoDetails($videoId: ID!, $lang: String, $publicFlag: Boolean, $serviceId: ID) {
+                query = """query getVideoDetails($videoId: ID!, $lang: String, $publicFlag: Boolean, $serviceId: ID) {
                   getVideoDetails(videoId: $videoId, lang: $lang, publicFlag: $publicFlag, serviceId: $serviceId) {
                     data { attributes { localeVideos { localeName videoUrls } subtitles { localeName closedCaptioning } posterURL } }
                   }
-                }'''
-                payload = {"operationName": "getVideoDetails", "query": query, "variables": {
-                    "videoId": video_id, "lang": None, "publicFlag": None,
-                    "serviceId": parse_qs(urlparse(self.manifest["url"]).query)["id"][0]}}
-                response = self.page.evaluate('''async payload => {
+                }"""
+                payload = {
+                    "operationName": "getVideoDetails",
+                    "query": query,
+                    "variables": {
+                        "videoId": video_id,
+                        "lang": None,
+                        "publicFlag": None,
+                        "serviceId": parse_qs(urlparse(self.manifest["url"]).query)["id"][0],
+                    },
+                }
+                response = self.page.evaluate(
+                    """async payload => {
                   const r = await fetch('https://api.netacad.com/api', {method:'POST', headers: {
                     'Content-Type':'application/json', authorization: 'Bearer ' + localStorage.getItem('AuthToken'), orgname:'skillsforall'
                   }, body:JSON.stringify(payload)}); return r.json();
-                }''', payload)
+                }""",
+                    payload,
+                )
                 attrs = response.get("data", {}).get("getVideoDetails", {}).get("data", {}).get("attributes")
                 if attrs:
                     metadata = {"video_id": video_id}
@@ -338,7 +371,7 @@ class Exporter:
                 result += f'<p><a href="{metadata["video"]}">Open downloaded video</a></p>'
             if metadata.get("captions"):
                 captions = (self.output / metadata["captions"]).read_text(encoding="utf-8-sig")
-                result += '<h4>Video transcript</h4>' + self.markup(transcript(captions))
+                result += "<h4>Video transcript</h4>" + self.markup(transcript(captions))
             else:
                 self.issue("transcript_unavailable", video_id)
         return result
@@ -357,41 +390,62 @@ class Exporter:
         if typ == "dynamic-graphic":
             result += self.dynamic_graphic(c)
         elif typ == "table":
-            result += '<table>'
+            result += "<table>"
             for row in c.get("_rows", []):
-                result += '<tr>'
+                result += "<tr>"
                 for cell in row.get("_cells", []):
                     tag = "th" if cell.get("_isHeading") else "td"
                     result += f'<{tag} colspan="{int(cell.get("_colSpan", 1))}" rowspan="{int(cell.get("_rowSpan", 1))}">{self.markup(cell.get("text"))}</{tag}>'
-                result += '</tr>'
-            result += '</table>'
+                result += "</tr>"
+            result += "</table>"
         elif typ == "commandWindow":
-            result += '<pre>' + '\n'.join(self.markup(line.get("text", "")) for line in c.get("precode", [])) + '</pre>'
+            result += "<pre>" + "\n".join(self.markup(line.get("text", "")) for line in c.get("precode", [])) + "</pre>"
         elif typ == "media":
             result += self.video(c)
         elif typ in {"adobe-animate", "adobe-animate-ia", "webComponentMedia", "dynamic-dropdown"}:
-            self.issue("static_interactive", (c.get("title") or getattr(self, "section_title", cid)).replace("{{_moduleNumber}}", str(self.number)), cid)
+            self.issue(
+                "static_interactive",
+                (c.get("title") or getattr(self, "section_title", cid)).replace("{{_moduleNumber}}", str(self.number)),
+                cid,
+            )
             result += '<p class="notice">Interactive activity / animation: static study extract.</p>'
-            result += '<p>' + self.markup(c.get("a11y_description", "")) + '</p>'
+            result += "<p>" + self.markup(c.get("a11y_description", "")) + "</p>"
             d = c.get("details", {})
             result += self.graphic(d.get("image")) + self.markup(d.get("instructions", ""))
-            result += '<ul>' + ''.join('<li>' + self.markup(t.get("text", t.get("value", ""))) + '</li>' for t in d.get("texts", d.get("text", []))) + '</ul>'
+            result += (
+                "<ul>"
+                + "".join(
+                    "<li>" + self.markup(t.get("text", t.get("value", ""))) + "</li>"
+                    for t in d.get("texts", d.get("text", []))
+                )
+                + "</ul>"
+            )
             for dropdown in d.get("dropdowns", []):
-                result += '<p>' + html.escape(dropdown["id"]) + ': ' + ' / '.join(self.markup(o["text"]) for o in dropdown["options"]) + '</p>'
+                result += (
+                    "<p>"
+                    + html.escape(dropdown["id"])
+                    + ": "
+                    + " / ".join(self.markup(o["text"]) for o in dropdown["options"])
+                    + "</p>"
+                )
         elif typ == "list-picker":
             d = c["details"]
             result += self.markup(d.get("instructions", ""))
-            result += '<p>Choices: ' + ' / '.join(self.markup(o["label"]) for o in d.get("listItemTypes", [])) + '</p><ul>'
-            result += ''.join('<li>' + self.markup(o["label"]) + ' __________</li>' for o in d.get("listItems", [])) + '</ul>'
+            result += (
+                "<p>Choices: " + " / ".join(self.markup(o["label"]) for o in d.get("listItemTypes", [])) + "</p><ul>"
+            )
+            result += (
+                "".join("<li>" + self.markup(o["label"]) + " __________</li>" for o in d.get("listItems", [])) + "</ul>"
+            )
         elif typ not in {"text", "graphic", "tabs", "mcq", "packetTracer"}:
             self.issue("unsupported_component", typ + ": " + cid)
         for item in c.get("_items", []):
             title = item.get("tabTitle") or item.get("title")
             if title:
-                result += '<h4>' + self.markup(title) + '</h4>'
+                result += "<h4>" + self.markup(title) + "</h4>"
             result += self.markup(item.get("body", ""))
             if item.get("text"):
-                result += '<p>□ ' + self.markup(item["text"]) + '</p>'
+                result += "<p>□ " + self.markup(item["text"]) + "</p>"
             result += self.graphic(item.get("_graphic"))
             for key in ("_downloadUrl", "iframeurl"):
                 source = item.get(key)
@@ -407,9 +461,11 @@ class Exporter:
 
     def document(self, title, body):
         css = files("netagrab").joinpath("print.css").read_text(encoding="utf-8")
-        return ('<!doctype html><html lang="en"><meta charset="utf-8">'
-                '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src \'self\' data:; style-src \'self\' \'unsafe-inline\'; media-src \'self\';">'
-                f'<title>{html.escape(title)}</title><style>{css}</style><body>{body}</body></html>')
+        return (
+            '<!doctype html><html lang="en"><meta charset="utf-8">'
+            "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; media-src 'self';\">"
+            f"<title>{html.escape(title)}</title><style>{css}</style><body>{body}</body></html>"
+        )
 
     def pdf(self, html_path, pdf_path):
         self.render_page.goto(html_path.resolve().as_uri(), wait_until="load")
@@ -417,21 +473,28 @@ class Exporter:
           await document.fonts.ready;
           await Promise.all([...document.images].map(img => img.decode().catch(() => {})));
         }""")
-        broken = self.render_page.evaluate("[...document.images].filter(i=>!i.naturalWidth).map(i=>i.getAttribute('src'))")
+        broken = self.render_page.evaluate(
+            "[...document.images].filter(i=>!i.naturalWidth).map(i=>i.getAttribute('src'))"
+        )
         for source in broken:
             self.issue("broken_image", source)
-        self.render_page.pdf(path=str(pdf_path), format="A4", print_background=True,
-                             margin={"top": "16mm", "bottom": "17mm", "left": "14mm", "right": "14mm"},
-                             display_header_footer=True, header_template="<span></span>",
-                             footer_template='<div style="width:100%;text-align:center;font-size:9px;color:#666">netagrab • Offline study • <span class="pageNumber"></span></div>')
+        self.render_page.pdf(
+            path=str(pdf_path),
+            format="A4",
+            print_background=True,
+            margin={"top": "16mm", "bottom": "17mm", "left": "14mm", "right": "14mm"},
+            display_header_footer=True,
+            header_template="<span></span>",
+            footer_template='<div style="width:100%;text-align:center;font-size:9px;color:#666">netagrab • Offline study • <span class="pageNumber"></span></div>',
+        )
 
     def module(self, module):
         self.number = module["number"]
-        self.module_base = self.base + f'm{self.number}/'
+        self.module_base = self.base + f"m{self.number}/"
         data = {}
         for name in ("course", "contentObjects", "articles", "blocks", "components", "assets"):
-            path = self.output / "source" / f'm{self.number}' / f'{name}.json'
-            if not self.fetch(self.module_base + self.language + '/' + name + '.json', path):
+            path = self.output / "source" / f"m{self.number}" / f"{name}.json"
+            if not self.fetch(self.module_base + self.language + "/" + name + ".json", path):
                 raise RuntimeError(f"Cannot download module {self.number} {name}. See report.json.")
             data[name] = json.loads(path.read_text())
         self.components = {c["_id"]: c for c in data["components"]}
@@ -440,6 +503,7 @@ class Exporter:
         for name in ("contentObjects", "articles", "blocks", "components"):
             for obj in data[name]:
                 children[obj.get("_parentId")].append(obj)
+
         def render_node(node, depth):
             if node.get("_type") == "component":
                 return self.component(node)
@@ -452,7 +516,10 @@ class Exporter:
             for child in children[node["_id"]]:
                 result += render_node(child, depth + 1)
             return result
-        body = f'<h1>{html.escape(module["title"])}</h1><p class="source">Cisco Networking Academy · {self.language}</p>'
+
+        body = (
+            f'<h1>{html.escape(module["title"])}</h1><p class="source">Cisco Networking Academy · {self.language}</p>'
+        )
         sections = []
         for node in data["contentObjects"]:
             if node.get("_parentId") not in {n["_id"] for n in data["contentObjects"]}:
@@ -460,51 +527,85 @@ class Exporter:
                 section_html = render_node(node, 2)
                 body += section_html
                 if self.formats & {"markdown", "json"}:
-                    sections.append({"id": node["_id"],
-                                     "title": BeautifulSoup(self.markup(node.get("displayTitle") or node.get("title", "")), "html.parser").get_text(),
-                                     "component_ids": [c["_id"] for c in data["components"] if c["_id"] in self.rendered - before],
-                                     "markdown": to_markdown(section_html)})
+                    sections.append(
+                        {
+                            "id": node["_id"],
+                            "title": BeautifulSoup(
+                                self.markup(node.get("displayTitle") or node.get("title", "")), "html.parser"
+                            ).get_text(),
+                            "component_ids": [
+                                c["_id"] for c in data["components"] if c["_id"] in self.rendered - before
+                            ],
+                            "markdown": to_markdown(section_html),
+                        }
+                    )
         # Preserve nested components even if an unfamiliar parent convention is used.
         for c in data["components"]:
             if c["_id"] not in self.rendered:
                 self.issue("unplaced_component", c["_id"])
-                extra = '<h3>' + self.markup(c.get("title", "Additional activity")) + '</h3>' + self.component(c)
+                extra = "<h3>" + self.markup(c.get("title", "Additional activity")) + "</h3>" + self.component(c)
                 body += extra
                 if self.formats & {"markdown", "json"}:
-                    sections.append({"id": c["_id"], "title": "Additional activity", "component_ids": [c["_id"]], "markdown": to_markdown(extra)})
-        stem = f'module-{self.number:02d}'
-        html_path = self.output / f'{stem}.html'
+                    sections.append(
+                        {
+                            "id": c["_id"],
+                            "title": "Additional activity",
+                            "component_ids": [c["_id"]],
+                            "markdown": to_markdown(extra),
+                        }
+                    )
+        stem = f"module-{self.number:02d}"
+        html_path = self.output / f"{stem}.html"
         html_path.write_text(self.document(module["title"], body))
-        entry = {"title": module["title"], "html": html_path.name,
-                 "components": len(self.rendered), "sections": len(data["contentObjects"])}
+        entry = {
+            "title": module["title"],
+            "html": html_path.name,
+            "components": len(self.rendered),
+            "sections": len(data["contentObjects"]),
+        }
         if "pdf" in self.formats:
-            pdf_path = self.output / f'{stem}.pdf'
+            pdf_path = self.output / f"{stem}.pdf"
             self.pdf(html_path, pdf_path)
             entry.update(pdf=str(pdf_path), pages=len(PdfReader(pdf_path).pages))
         if "markdown" in self.formats:
-            md_path = self.output / f'{stem}.md'
+            md_path = self.output / f"{stem}.md"
             md_path.write_text(to_markdown(body), encoding="utf-8")
             entry["markdown"] = md_path.name
         if self.formats & {"markdown", "json"}:
-            structured = {"number": self.number, "title": module["title"],
-                          "source_url": self.module_base + self.language + "/contentObjects.json",
-                          "sections": sections}
+            structured = {
+                "number": self.number,
+                "title": module["title"],
+                "source_url": self.module_base + self.language + "/contentObjects.json",
+                "sections": sections,
+            }
             self.text_modules.append(structured)
             if "json" in self.formats:
-                write_json(self.output / f'{stem}.json', structured)
-                entry["json"] = f'{stem}.json'
+                write_json(self.output / f"{stem}.json", structured)
+                entry["json"] = f"{stem}.json"
         self.entries.append(entry)
         self.report()
-        print(f'{module["title"]}: {len(self.rendered)} components ({", ".join(sorted(self.formats))})', flush=True)
+        print(f"{module['title']}: {len(self.rendered)} components ({', '.join(sorted(self.formats))})", flush=True)
 
     def report(self):
-        write_json(self.output / "report.json", {"modules_expected": len(self.manifest["modules"]),
-            "formats": sorted(self.formats),
-            "modules_exported": len(self.entries), "modules": self.entries,
-            "component_types": dict(self.types), "attachments": self.attachments, "issues": self.issues,
-            "external_assessments": [title for title in self.manifest.get("outline", []) if not re.match(r"Module \d+:", title)],
-            "limitations": ["PDFs contain static content; interactive behavior is not preserved.",
-                            "External checkpoint/final exams are not launched or submitted."]})
+        write_json(
+            self.output / "report.json",
+            {
+                "modules_expected": len(self.manifest["modules"]),
+                "formats": sorted(self.formats),
+                "modules_exported": len(self.entries),
+                "modules": self.entries,
+                "component_types": dict(self.types),
+                "attachments": self.attachments,
+                "issues": self.issues,
+                "external_assessments": [
+                    title for title in self.manifest.get("outline", []) if not re.match(r"Module \d+:", title)
+                ],
+                "limitations": [
+                    "PDFs contain static content; interactive behavior is not preserved.",
+                    "External checkpoint/final exams are not launched or submitted.",
+                ],
+            },
+        )
 
     def finish_text(self):
         attachments = []
@@ -527,35 +628,68 @@ class Exporter:
                     self.issue("lab_text_extraction_failed", path)
                     attachment["text_extraction_failed"] = True
             attachments.append(attachment)
-        limitations = ["Images are local file references with available descriptions and labels; text-only tools cannot see the image pixels.",
-                       "Lab PDF text is extracted without OCR; use the original PDFs for images and layout.",
-                       "Animations and interactive activities use static extracts. External assessments remain online."]
+        limitations = [
+            "Images are local file references with available descriptions and labels; text-only tools cannot see the image pixels.",
+            "Lab PDF text is extracted without OCR; use the original PDFs for images and layout.",
+            "Animations and interactive activities use static extracts. External assessments remain online.",
+        ]
         if "markdown" in self.formats:
             title = self.manifest.get("title", "NetAcad course")
             header = f"# {title}\n\nSource: {self.manifest.get('url', '')}\n\nLanguage: {self.language}\n\n"
             header += "\n".join("- " + note for note in limitations) + "\n\n"
-            contents = "## Modules\n\n" + "".join(f'- [{e["title"]}]({e["markdown"]})\n' for e in self.entries)
-            (self.output / "index.md").write_text(header + contents + "\n[Lab handouts and extracted text](labs.md)\n\n[Coverage report](report.json)\n", encoding="utf-8")
+            contents = "## Modules\n\n" + "".join(f"- [{e['title']}]({e['markdown']})\n" for e in self.entries)
+            (self.output / "index.md").write_text(
+                header + contents + "\n[Lab handouts and extracted text](labs.md)\n\n[Coverage report](report.json)\n",
+                encoding="utf-8",
+            )
             (self.output / "labs.md").write_text(labs, encoding="utf-8")
             course = header + contents + "\n\n---\n\n"
-            course += "\n\n---\n\n".join((self.output / e["markdown"]).read_text(encoding="utf-8") for e in self.entries)
+            course += "\n\n---\n\n".join(
+                (self.output / e["markdown"]).read_text(encoding="utf-8") for e in self.entries
+            )
             (self.output / "course.md").write_text(course + "\n\n---\n\n" + labs, encoding="utf-8")
         if "json" in self.formats:
-            write_json(self.output / "course.json", {"schema_version": 1,
-                "title": self.manifest.get("title", "NetAcad course"), "source_url": self.manifest.get("url"),
-                "language": self.language, "asset_base": ".", "modules": self.text_modules,
-                "attachments": attachments, "limitations": limitations, "issues": self.issues})
+            write_json(
+                self.output / "course.json",
+                {
+                    "schema_version": 1,
+                    "title": self.manifest.get("title", "NetAcad course"),
+                    "source_url": self.manifest.get("url"),
+                    "language": self.language,
+                    "asset_base": ".",
+                    "modules": self.text_modules,
+                    "attachments": attachments,
+                    "limitations": limitations,
+                    "issues": self.issues,
+                },
+            )
 
     def finish(self):
         self.number = None
         if self.formats & {"markdown", "json"}:
             self.finish_text()
-        links = ''.join(f'<li><a href="{e["html"]}">{html.escape(e["title"])}</a></li>' for e in self.entries)
+        links = "".join(f'<li><a href="{e["html"]}">{html.escape(e["title"])}</a></li>' for e in self.entries)
         title = self.manifest.get("title", "NetAcad course")
-        body = f'<h1>{html.escape(title)}</h1><p>Offline study edition · Cisco Networking Academy</p><ol>' + links + '</ol>'
-        body += '<p>' + ' · '.join(f'<a href="course.{"md" if fmt == "markdown" else fmt}">{fmt.upper()} export</a>' for fmt in FORMATS if fmt in self.formats) + '</p>'
-        body += '<h2>Lab handouts and downloads</h2><ul>' + ''.join(f'<li><a href="{path}">{html.escape(title)}</a></li>' for path, title in self.attachments.items()) + '</ul>'
-        body += '<h2>Export notes</h2><p>Videos are separate files; available captions are included as transcripts. Animations and interactive activities are represented by static extracts. External exams require NetAcad.</p>'
+        body = (
+            f"<h1>{html.escape(title)}</h1><p>Offline study edition · Cisco Networking Academy</p><ol>"
+            + links
+            + "</ol>"
+        )
+        body += (
+            "<p>"
+            + " · ".join(
+                f'<a href="course.{"md" if fmt == "markdown" else fmt}">{fmt.upper()} export</a>'
+                for fmt in FORMATS
+                if fmt in self.formats
+            )
+            + "</p>"
+        )
+        body += (
+            "<h2>Lab handouts and downloads</h2><ul>"
+            + "".join(f'<li><a href="{path}">{html.escape(title)}</a></li>' for path, title in self.attachments.items())
+            + "</ul>"
+        )
+        body += "<h2>Export notes</h2><p>Videos are separate files; available captions are included as transcripts. Animations and interactive activities are represented by static extracts. External exams require NetAcad.</p>"
         body += f'<p>{len(self.issues)} items are detailed in <a href="report.json">the coverage report</a>.</p>'
         index = self.output / "index.html"
         index.write_text(self.document(title + " — Offline study", body))
