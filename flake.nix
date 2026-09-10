@@ -8,7 +8,7 @@
       devShells = nixpkgs.lib.genAttrs systems (system:
         let pkgs = import nixpkgs { inherit system; }; in {
           default = pkgs.mkShell {
-            packages = [ (pkgs.python3.withPackages (p: [ p.playwright p.pypdf p.pillow ])) pkgs.chromium ];
+            packages = [ (pkgs.python3.withPackages (p: [ p.playwright p.pypdf p.pillow p.markdownify p.beautifulsoup4 ])) pkgs.chromium ];
             CHROMIUM_PATH = "${pkgs.chromium}/bin/chromium";
             PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1";
           };

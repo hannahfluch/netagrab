@@ -16,12 +16,34 @@ from urllib.parse import urlparse, urljoin, parse_qs
 from urllib.request import urlopen, Request
 from urllib.error import HTTPError, URLError
 from collections import defaultdict, Counter
+from contextlib import ExitStack
 
+from bs4 import BeautifulSoup
+from markdownify import markdownify
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 from pypdf import PdfReader, PdfWriter
 
-DEFAULT_URL = "https://www.netacad.com/launch?id=8d2217e7-b386-4560-bed2-caaa11e5f8a3&tab=curriculum&view=083b1f4c-8120-5797-88f9-e8525038fb98"
 SESSION = Path(".session/auth.json")
+FORMATS = ("pdf", "markdown", "json")
+
+
+def to_markdown(markup):
+    """Keep study content and local asset references, dropping browser styling."""
+    soup = BeautifulSoup(markup, "html.parser")
+    for element in soup.select("script, style, link, meta, title"):
+        element.decompose()
+    for label in soup.select(".dynamic-text-item"):
+        label.name = "p"
+    for link in soup.select('a[href$=".html"]'):
+        if re.fullmatch(r"(?:module-\d+|index)\.html", link["href"]):
+            link["href"] = link["href"][:-5] + ".md"
+    return markdownify(str(soup), heading_style="ATX", bullets="-",
+                       keep_inline_images_in=["td", "th"], wrap=False).strip() + "\n"
+
+
+def text_fence(text):
+    fence = "`" * max(3, max((len(m[0]) + 1 for m in re.finditer(r"`+", text)), default=3))
+    return f"{fence}text\n{text}\n{fence}\n"
 
 
 def save_session(context):
@@ -31,11 +53,29 @@ def save_session(context):
     SESSION.chmod(0o600)
 
 
+def load_session():
+    if not SESSION.exists():
+        return None
+    try:
+        state = json.loads(SESSION.read_text())
+        if not isinstance(state, dict) or not all(isinstance(state.get(key), list) for key in ("cookies", "origins")):
+            raise ValueError("Invalid browser state")
+        return state
+    except (OSError, ValueError):
+        print("Saved session could not be read; starting a fresh login.")
+        return None
+
+
 def login(page, context, url, headed=False):
     page.goto(url, wait_until="domcontentloaded", timeout=60000)
-    deadline = time.monotonic() + 40
+    deadline = time.monotonic() + 60
+    submitted = False
     while time.monotonic() < deadline:
-        if page.locator("#username").is_visible():
+        if page.locator("#course-outline").is_visible():
+            save_session(context)
+            return
+        trusted_login = urlparse(page.url).scheme == "https" and urlparse(page.url).hostname == "auth.netacad.com"
+        if trusted_login and not submitted and page.locator("#username").is_visible():
             email = os.environ.get("NETACAD_USERNAME") or input("NetAcad email: ")
             page.locator("#username").fill(email)
             if not page.locator("#password").is_visible():
@@ -45,18 +85,17 @@ def login(page, context, url, headed=False):
             page.locator("#password").fill(password)
             del password
             page.locator("#kc-login").click()
-            break
-        if page.locator("iframe").count():
-            break
+            submitted = True
+            deadline = time.monotonic() + 60
+        if submitted and page.locator("#input-error, #kc-feedback-text, .alert-error").first.is_visible():
+            raise RuntimeError("Login was rejected. Check your credentials and try again, or use --headed for browser login.")
         page.wait_for_timeout(500)
-    page.wait_for_timeout(4000)
-    if "auth.netacad.com" in page.url:
-        if not headed:
-            raise RuntimeError("Login needs attention. Run with --headed to complete login in the browser.")
+    if headed:
         input("Complete login in Chromium, then press Enter here: ")
-    if "auth.netacad.com" in page.url:
-        raise RuntimeError("Login did not complete.")
-    save_session(context)
+        page.locator("#course-outline").wait_for(state="visible", timeout=60000)
+        save_session(context)
+        return
+    raise RuntimeError("The course did not become available. Check the link and enrollment, or use --headed to complete login/MFA.")
 
 
 def merge_pdfs(entries, destination):
@@ -130,9 +169,13 @@ def discover(page, context, url, headed):
 
 
 class Exporter:
-    def __init__(self, output, manifest, browser, page=None, videos=True):
+    def __init__(self, output, manifest, browser=None, page=None, videos=True, formats=("pdf",)):
         self.output, self.manifest, self.browser = output, manifest, browser
         self.page, self.videos = page, videos
+        self.formats = set(formats)
+        if not self.formats or self.formats - set(FORMATS):
+            raise ValueError("Choose pdf, markdown, or json")
+        self.text_modules = []
         self.base = manifest["content_base"]
         self.global_base = self.base.split("courses/content/")[0] + "_assets/"
         self.language = manifest["language"]
@@ -143,6 +186,9 @@ class Exporter:
         self.output.mkdir(parents=True, exist_ok=True)
         self.output.chmod(0o700)
         (output / "assets").mkdir(exist_ok=True)
+        self.render_page = None
+        if "pdf" not in self.formats:
+            return
         self.render_page = browser.new_page(viewport={"width": 1100, "height": 1000})
         # Exported source HTML never runs course scripts or contacts its tracking endpoints.
         self.render_page.route("https://**/*", lambda route: route.abort())
@@ -241,7 +287,7 @@ class Exporter:
         return (style + f'<figure class="diagram" style="height:{height*scale}px"><div id="{uuid}">'
                 f'<div id="importID{uuid}" class="dynamic-graphic-display" style="width:{width}px;height:{height}px;transform:scale({scale});transform-origin:top left">'
                 '<div class="dynamic-graphic-content" style="position:relative;width:100%;height:100%">'
-                f'<img style="width:100%;height:100%" src="{image}"><div class="dynamic-text">{labels}</div></div></div></div></figure>'
+                f'<img style="width:100%;height:100%" src="{image}" alt="{html.escape(c.get("a11y_description", ""), quote=True)}"><div class="dynamic-text">{labels}</div></div></div></div></figure>'
                 + (f'<p class="caption">{self.markup(d["caption"])}</p>' if d.get("caption") else ""))
 
     def video(self, c):
@@ -411,78 +457,204 @@ class Exporter:
                 result += render_node(child, depth + 1)
             return result
         body = f'<h1>{html.escape(module["title"])}</h1><p class="source">Cisco Networking Academy · {self.language}</p>'
+        sections = []
         for node in data["contentObjects"]:
             if node.get("_parentId") not in {n["_id"] for n in data["contentObjects"]}:
-                body += render_node(node, 2)
+                before = self.rendered.copy()
+                section_html = render_node(node, 2)
+                body += section_html
+                if self.formats & {"markdown", "json"}:
+                    sections.append({"id": node["_id"],
+                                     "title": BeautifulSoup(self.markup(node.get("displayTitle") or node.get("title", "")), "html.parser").get_text(),
+                                     "component_ids": [c["_id"] for c in data["components"] if c["_id"] in self.rendered - before],
+                                     "markdown": to_markdown(section_html)})
         # Preserve nested components even if an unfamiliar parent convention is used.
         for c in data["components"]:
             if c["_id"] not in self.rendered:
                 self.issue("unplaced_component", c["_id"])
-                body += '<h3>' + self.markup(c.get("title", "Additional activity")) + '</h3>' + self.component(c)
+                extra = '<h3>' + self.markup(c.get("title", "Additional activity")) + '</h3>' + self.component(c)
+                body += extra
+                if self.formats & {"markdown", "json"}:
+                    sections.append({"id": c["_id"], "title": "Additional activity", "component_ids": [c["_id"]], "markdown": to_markdown(extra)})
         stem = f'module-{self.number:02d}'
         html_path = self.output / f'{stem}.html'
         html_path.write_text(self.document(module["title"], body))
-        pdf_path = self.output / f'{stem}.pdf'
-        self.pdf(html_path, pdf_path)
-        pages = len(PdfReader(pdf_path).pages)
-        self.entries.append({"title": module["title"], "pdf": str(pdf_path), "html": html_path.name,
-                             "components": len(self.rendered), "sections": len(data["contentObjects"]), "pages": pages})
+        entry = {"title": module["title"], "html": html_path.name,
+                 "components": len(self.rendered), "sections": len(data["contentObjects"])}
+        if "pdf" in self.formats:
+            pdf_path = self.output / f'{stem}.pdf'
+            self.pdf(html_path, pdf_path)
+            entry.update(pdf=str(pdf_path), pages=len(PdfReader(pdf_path).pages))
+        if "markdown" in self.formats:
+            md_path = self.output / f'{stem}.md'
+            md_path.write_text(to_markdown(body), encoding="utf-8")
+            entry["markdown"] = md_path.name
+        if self.formats & {"markdown", "json"}:
+            structured = {"number": self.number, "title": module["title"],
+                          "source_url": self.module_base + self.language + "/contentObjects.json",
+                          "sections": sections}
+            self.text_modules.append(structured)
+            if "json" in self.formats:
+                write_json(self.output / f'{stem}.json', structured)
+                entry["json"] = f'{stem}.json'
+        self.entries.append(entry)
         self.report()
-        print(f'{module["title"]}: {len(self.rendered)} components, {pages} pages', flush=True)
+        print(f'{module["title"]}: {len(self.rendered)} components ({", ".join(sorted(self.formats))})', flush=True)
 
     def report(self):
         write_json(self.output / "report.json", {"modules_expected": len(self.manifest["modules"]),
+            "formats": sorted(self.formats),
             "modules_exported": len(self.entries), "modules": self.entries,
             "component_types": dict(self.types), "attachments": self.attachments, "issues": self.issues,
             "external_assessments": [title for title in self.manifest.get("outline", []) if not re.match(r"Module \d+:", title)],
             "limitations": ["PDFs contain static content; interactive behavior is not preserved.",
                             "External checkpoint/final exams are not launched or submitted."]})
 
+    def finish_text(self):
+        attachments = []
+        labs = "# Lab handouts and downloads\n\nPDF text extracts follow; consult the linked originals for images and layout. No OCR is performed.\n\n"
+        for path, title in self.attachments.items():
+            attachment = {"title": title, "path": path}
+            labs += f"## {title}\n\n[Original download]({path})\n\n"
+            if path.endswith(".pdf"):
+                try:
+                    reader = PdfReader(self.output / path)
+                    pages = []
+                    for number, page in enumerate(reader.pages, 1):
+                        text = page.extract_text() or ""
+                        pages.append({"number": number, "text": text})
+                        if not text.strip():
+                            self.issue("lab_page_without_text", f"{path}, page {number}")
+                        labs += f"### Page {number}\n\n" + text_fence(text) + "\n"
+                    attachment["pages"] = pages
+                except Exception:
+                    self.issue("lab_text_extraction_failed", path)
+                    attachment["text_extraction_failed"] = True
+            attachments.append(attachment)
+        limitations = ["Images are local file references with available descriptions and labels; text-only tools cannot see the image pixels.",
+                       "Lab PDF text is extracted without OCR; use the original PDFs for images and layout.",
+                       "Animations and interactive activities use static extracts. External assessments remain online."]
+        if "markdown" in self.formats:
+            title = self.manifest.get("title", "NetAcad course")
+            header = f"# {title}\n\nSource: {self.manifest.get('url', '')}\n\nLanguage: {self.language}\n\n"
+            header += "\n".join("- " + note for note in limitations) + "\n\n"
+            contents = "## Modules\n\n" + "".join(f'- [{e["title"]}]({e["markdown"]})\n' for e in self.entries)
+            (self.output / "index.md").write_text(header + contents + "\n[Lab handouts and extracted text](labs.md)\n\n[Coverage report](report.json)\n", encoding="utf-8")
+            (self.output / "labs.md").write_text(labs, encoding="utf-8")
+            course = header + contents + "\n\n---\n\n"
+            course += "\n\n---\n\n".join((self.output / e["markdown"]).read_text(encoding="utf-8") for e in self.entries)
+            (self.output / "course.md").write_text(course + "\n\n---\n\n" + labs, encoding="utf-8")
+        if "json" in self.formats:
+            write_json(self.output / "course.json", {"schema_version": 1,
+                "title": self.manifest.get("title", "NetAcad course"), "source_url": self.manifest.get("url"),
+                "language": self.language, "asset_base": ".", "modules": self.text_modules,
+                "attachments": attachments, "limitations": limitations, "issues": self.issues})
+
     def finish(self):
+        self.number = None
+        if self.formats & {"markdown", "json"}:
+            self.finish_text()
         links = ''.join(f'<li><a href="{e["html"]}">{html.escape(e["title"])}</a></li>' for e in self.entries)
         body = '<h1>CyberOps Associate</h1><p>Offline study edition · Cisco Networking Academy</p><ol>' + links + '</ol>'
+        body += '<p>' + ' · '.join(f'<a href="course.{"md" if fmt == "markdown" else fmt}">{fmt.upper()} export</a>' for fmt in FORMATS if fmt in self.formats) + '</p>'
         body += '<h2>Lab handouts and downloads</h2><ul>' + ''.join(f'<li><a href="{path}">{html.escape(title)}</a></li>' for path, title in self.attachments.items()) + '</ul>'
         body += '<h2>Export notes</h2><p>Videos are separate files; available captions are included as transcripts. Animations and interactive activities are represented by static extracts. External exams require NetAcad.</p>'
         body += f'<p>{len(self.issues)} items are detailed in <a href="report.json">the coverage report</a>.</p>'
         index = self.output / "index.html"
         index.write_text(self.document("CyberOps Associate — Offline study", body))
-        self.pdf(index, self.output / "contents.pdf")
-        entries = [{"pdf": str(self.output / "contents.pdf"), "title": "Contents and export notes"}] + self.entries
-        for path, title in self.attachments.items():
-            if path.endswith(".pdf"):
-                try:
-                    PdfReader(self.output / path)
-                    entries.append({"pdf": str(self.output / path), "title": "Lab: " + title})
-                except Exception:
-                    self.issue("invalid_pdf", path)
-        merge_pdfs(entries, self.output / "course.pdf")
+        if "pdf" in self.formats:
+            self.pdf(index, self.output / "contents.pdf")
+            entries = [{"pdf": str(self.output / "contents.pdf"), "title": "Contents and export notes"}] + self.entries
+            for path, title in self.attachments.items():
+                if path.endswith(".pdf"):
+                    try:
+                        PdfReader(self.output / path)
+                        entries.append({"pdf": str(self.output / path), "title": "Lab: " + title})
+                    except Exception:
+                        self.issue("invalid_pdf", path)
+            merge_pdfs(entries, self.output / "course.pdf")
         self.report()
 
 
-def main():
+def course_id(url):
+    parsed = urlparse(url)
+    ids = parse_qs(parsed.query).get("id", [])
+    if (parsed.scheme != "https" or parsed.hostname not in {"netacad.com", "www.netacad.com"}
+            or parsed.path.rstrip("/") != "/launch" or len(ids) != 1 or not ids[0].strip()
+            or parsed.username or parsed.password):
+        raise ValueError("Use a NetAcad course launch link: https://www.netacad.com/launch?id=...")
+    return ids[0]
+
+
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--url", default=DEFAULT_URL)
-    parser.add_argument("--output", type=Path, default=Path("output"))
+    parser.add_argument("course_url", nargs="?", help="Course launch URL; prompts on stdin when omitted")
+    parser.add_argument("--url", help="Alternative to the positional course URL")
+    parser.add_argument("--output", type=Path, help="Output folder (default: output, or a course-specific subfolder)")
     parser.add_argument("--headed", action="store_true", help="Show Chromium for manual login/MFA")
     parser.add_argument("--offline", action="store_true", help="Rebuild from downloaded sources and assets")
     parser.add_argument("--modules", help="Comma-separated module numbers for a partial export")
     parser.add_argument("--no-videos", action="store_true", help="Download captions and posters, skip video files")
-    args = parser.parse_args()
+    parser.add_argument("--format", "--formats", nargs="+", choices=(*FORMATS, "all"), default=["pdf"],
+                        help="Output format(s): pdf (default), markdown, json (structured AI input), or all")
+    args = parser.parse_args(argv)
+    if args.course_url is not None and args.url is not None:
+        parser.error("Pass the course URL either as an argument or with --url, not both")
+    args.url = args.course_url if args.course_url is not None else args.url
+    if args.url is None and not args.offline:
+        try:
+            args.url = input("NetAcad course URL: ")
+        except EOFError:
+            parser.error("No course URL received on stdin. Pass it as an argument or with --url")
+    if args.url is not None:
+        args.url = args.url.strip()
+        try:
+            course_id(args.url)
+        except ValueError as exc:
+            parser.error(str(exc))
+    return args
+
+
+def output_directory(args):
+    output = args.output if args.output is not None else Path("output")
+    cached = output / "course-manifest.json"
+    if cached.exists() and args.url:
+        old = json.loads(cached.read_text())
+        if course_id(old["url"]) != course_id(args.url):
+            if args.output is not None or args.offline:
+                raise ValueError("That output folder belongs to another course. Choose a different --output folder.")
+            key = hashlib.sha256(course_id(args.url).encode()).hexdigest()[:12]
+            output = output / f"course-{key}"
+            print(f"Saving this course in {output}")
+    return output
+
+
+def main():
+    args = parse_args()
+    args.output = output_directory(args)
+    formats = set(FORMATS) if "all" in args.format else set(args.format)
     os.umask(0o077)
-    with sync_playwright() as p:
-        browser = p.chromium.launch(executable_path=os.environ.get("CHROMIUM_PATH"), headless=not args.headed)
+    with ExitStack() as stack:
+        browser = None
+        if not args.offline or "pdf" in formats:
+            p = stack.enter_context(sync_playwright())
+            browser = p.chromium.launch(executable_path=os.environ.get("CHROMIUM_PATH"), headless=not args.headed)
         try:
             manifest_path = args.output / "course-manifest.json"
             page = None
             if args.offline:
                 manifest = json.loads(manifest_path.read_text())
             else:
-                context = browser.new_context(storage_state=str(SESSION) if SESSION.exists() else None)
+                context = browser.new_context(storage_state=load_session())
                 page = context.new_page()
                 manifest = discover(page, context, args.url, args.headed)
+                if manifest_path.exists():
+                    previous = json.loads(manifest_path.read_text())
+                    if any(previous.get(key) != manifest.get(key) for key in ("content_base", "language")):
+                        raise ValueError("This folder contains another course edition or language. Choose a different --output folder.")
                 write_json(manifest_path, manifest)
                 save_session(context)
-            exporter = Exporter(args.output, manifest, browser, page, not args.no_videos)
+            exporter = Exporter(args.output, manifest, browser, page, not args.no_videos, formats=formats)
             if args.offline:
                 def cached_only(url, path):
                     if path.exists() and path.stat().st_size:
@@ -502,14 +674,22 @@ def main():
                 exporter.finish()
             finally:
                 exporter.report()
-            print(f'PDF: {args.output / "course.pdf"}\nOffline HTML: {args.output / "index.html"}\nCoverage report: {args.output / "report.json"}')
+            for fmt in FORMATS:
+                if fmt in formats:
+                    extension = "md" if fmt == "markdown" else fmt
+                    print(f'{fmt}: {args.output / ("course." + extension)}')
+            print(f'Offline HTML: {args.output / "index.html"}\nCoverage report: {args.output / "report.json"}')
         finally:
-            browser.close()
+            if browser:
+                browser.close()
 
 
 if __name__ == "__main__":
     try:
         main()
+    except EOFError:
+        print("Input ended before login details were entered. Run interactively to enter your credentials.", file=sys.stderr)
+        sys.exit(1)
     except (RuntimeError, ValueError, FileNotFoundError, PlaywrightTimeout) as exc:
         print(f"Export stopped: {exc}", file=sys.stderr)
         sys.exit(1)
