@@ -7,7 +7,7 @@ Download NetAcad courses as PDF, Markdown, or structured JSON for offline study.
 ```sh
 nix develop
 uv sync
-uv run netagrab 'https://www.netacad.com/launch?id=COURSE_ID' --format markdown
+uv run netagrab
 ```
 
 Without Nix, install uv, then run `uv sync` and `uv run playwright install chromium`.
