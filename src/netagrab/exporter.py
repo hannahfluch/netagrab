@@ -1,26 +1,22 @@
-#!/usr/bin/env python3
 """Export an enrolled NetAcad course for offline study using Chromium."""
 from __future__ import annotations
 
-import argparse
 import getpass
 import hashlib
 import html
 import json
 import os
 from pathlib import Path
+from importlib.resources import files
 import re
-import sys
 import time
 from urllib.parse import urlparse, urljoin, parse_qs
 from urllib.request import urlopen, Request
 from urllib.error import HTTPError, URLError
 from collections import defaultdict, Counter
-from contextlib import ExitStack
 
 from bs4 import BeautifulSoup
 from markdownify import markdownify
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 from pypdf import PdfReader, PdfWriter
 
 SESSION = Path(".session/auth.json")
@@ -207,7 +203,7 @@ class Exporter:
         path.parent.mkdir(parents=True, exist_ok=True)
         for attempt in range(3):
             try:
-                with urlopen(Request(url, headers={"User-Agent": "NetAcadOfflineStudy/1.0"}), timeout=60) as response:
+                with urlopen(Request(url, headers={"User-Agent": "netagrab/0.1.0"}), timeout=60) as response:
                     content_type = response.headers.get("Content-Type", "")
                     if "text/html" in content_type and path.suffix != ".html":
                         raise ValueError("Received HTML instead of the requested asset")
@@ -410,7 +406,7 @@ class Exporter:
         return f'<div class="component" id="{html.escape(cid)}">{result}</div>'
 
     def document(self, title, body):
-        css = Path(__file__).with_name("print.css").read_text()
+        css = files("netagrab").joinpath("print.css").read_text(encoding="utf-8")
         return ('<!doctype html><html lang="en"><meta charset="utf-8">'
                 '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src \'self\' data:; style-src \'self\' \'unsafe-inline\'; media-src \'self\';">'
                 f'<title>{html.escape(title)}</title><style>{css}</style><body>{body}</body></html>')
@@ -427,7 +423,7 @@ class Exporter:
         self.render_page.pdf(path=str(pdf_path), format="A4", print_background=True,
                              margin={"top": "16mm", "bottom": "17mm", "left": "14mm", "right": "14mm"},
                              display_header_footer=True, header_template="<span></span>",
-                             footer_template='<div style="width:100%;text-align:center;font-size:9px;color:#666">Cisco CyberOps • Offline study • <span class="pageNumber"></span></div>')
+                             footer_template='<div style="width:100%;text-align:center;font-size:9px;color:#666">netagrab • Offline study • <span class="pageNumber"></span></div>')
 
     def module(self, module):
         self.number = module["number"]
@@ -555,13 +551,14 @@ class Exporter:
         if self.formats & {"markdown", "json"}:
             self.finish_text()
         links = ''.join(f'<li><a href="{e["html"]}">{html.escape(e["title"])}</a></li>' for e in self.entries)
-        body = '<h1>CyberOps Associate</h1><p>Offline study edition · Cisco Networking Academy</p><ol>' + links + '</ol>'
+        title = self.manifest.get("title", "NetAcad course")
+        body = f'<h1>{html.escape(title)}</h1><p>Offline study edition · Cisco Networking Academy</p><ol>' + links + '</ol>'
         body += '<p>' + ' · '.join(f'<a href="course.{"md" if fmt == "markdown" else fmt}">{fmt.upper()} export</a>' for fmt in FORMATS if fmt in self.formats) + '</p>'
         body += '<h2>Lab handouts and downloads</h2><ul>' + ''.join(f'<li><a href="{path}">{html.escape(title)}</a></li>' for path, title in self.attachments.items()) + '</ul>'
         body += '<h2>Export notes</h2><p>Videos are separate files; available captions are included as transcripts. Animations and interactive activities are represented by static extracts. External exams require NetAcad.</p>'
         body += f'<p>{len(self.issues)} items are detailed in <a href="report.json">the coverage report</a>.</p>'
         index = self.output / "index.html"
-        index.write_text(self.document("CyberOps Associate — Offline study", body))
+        index.write_text(self.document(title + " — Offline study", body))
         if "pdf" in self.formats:
             self.pdf(index, self.output / "contents.pdf")
             entries = [{"pdf": str(self.output / "contents.pdf"), "title": "Contents and export notes"}] + self.entries
@@ -574,122 +571,3 @@ class Exporter:
                         self.issue("invalid_pdf", path)
             merge_pdfs(entries, self.output / "course.pdf")
         self.report()
-
-
-def course_id(url):
-    parsed = urlparse(url)
-    ids = parse_qs(parsed.query).get("id", [])
-    if (parsed.scheme != "https" or parsed.hostname not in {"netacad.com", "www.netacad.com"}
-            or parsed.path.rstrip("/") != "/launch" or len(ids) != 1 or not ids[0].strip()
-            or parsed.username or parsed.password):
-        raise ValueError("Use a NetAcad course launch link: https://www.netacad.com/launch?id=...")
-    return ids[0]
-
-
-def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("course_url", nargs="?", help="Course launch URL; prompts on stdin when omitted")
-    parser.add_argument("--url", help="Alternative to the positional course URL")
-    parser.add_argument("--output", type=Path, help="Output folder (default: output, or a course-specific subfolder)")
-    parser.add_argument("--headed", action="store_true", help="Show Chromium for manual login/MFA")
-    parser.add_argument("--offline", action="store_true", help="Rebuild from downloaded sources and assets")
-    parser.add_argument("--modules", help="Comma-separated module numbers for a partial export")
-    parser.add_argument("--no-videos", action="store_true", help="Download captions and posters, skip video files")
-    parser.add_argument("--format", "--formats", nargs="+", choices=(*FORMATS, "all"), default=["pdf"],
-                        help="Output format(s): pdf (default), markdown, json (structured AI input), or all")
-    args = parser.parse_args(argv)
-    if args.course_url is not None and args.url is not None:
-        parser.error("Pass the course URL either as an argument or with --url, not both")
-    args.url = args.course_url if args.course_url is not None else args.url
-    if args.url is None and not args.offline:
-        try:
-            args.url = input("NetAcad course URL: ")
-        except EOFError:
-            parser.error("No course URL received on stdin. Pass it as an argument or with --url")
-    if args.url is not None:
-        args.url = args.url.strip()
-        try:
-            course_id(args.url)
-        except ValueError as exc:
-            parser.error(str(exc))
-    return args
-
-
-def output_directory(args):
-    output = args.output if args.output is not None else Path("output")
-    cached = output / "course-manifest.json"
-    if cached.exists() and args.url:
-        old = json.loads(cached.read_text())
-        if course_id(old["url"]) != course_id(args.url):
-            if args.output is not None or args.offline:
-                raise ValueError("That output folder belongs to another course. Choose a different --output folder.")
-            key = hashlib.sha256(course_id(args.url).encode()).hexdigest()[:12]
-            output = output / f"course-{key}"
-            print(f"Saving this course in {output}")
-    return output
-
-
-def main():
-    args = parse_args()
-    args.output = output_directory(args)
-    formats = set(FORMATS) if "all" in args.format else set(args.format)
-    os.umask(0o077)
-    with ExitStack() as stack:
-        browser = None
-        if not args.offline or "pdf" in formats:
-            p = stack.enter_context(sync_playwright())
-            browser = p.chromium.launch(executable_path=os.environ.get("CHROMIUM_PATH"), headless=not args.headed)
-        try:
-            manifest_path = args.output / "course-manifest.json"
-            page = None
-            if args.offline:
-                manifest = json.loads(manifest_path.read_text())
-            else:
-                context = browser.new_context(storage_state=load_session())
-                page = context.new_page()
-                manifest = discover(page, context, args.url, args.headed)
-                if manifest_path.exists():
-                    previous = json.loads(manifest_path.read_text())
-                    if any(previous.get(key) != manifest.get(key) for key in ("content_base", "language")):
-                        raise ValueError("This folder contains another course edition or language. Choose a different --output folder.")
-                write_json(manifest_path, manifest)
-                save_session(context)
-            exporter = Exporter(args.output, manifest, browser, page, not args.no_videos, formats=formats)
-            if args.offline:
-                def cached_only(url, path):
-                    if path.exists() and path.stat().st_size:
-                        return path
-                    exporter.issue("missing_cached_asset", clean_url(url))
-                    return None
-                exporter.fetch = cached_only
-            modules = manifest["modules"]
-            if args.modules:
-                selected = {int(n) for n in args.modules.split(",")}
-                modules = [m for m in modules if m["number"] in selected]
-                if not modules or selected - {m["number"] for m in modules}:
-                    raise ValueError("Requested module number is not in the course outline")
-            try:
-                for module in modules:
-                    exporter.module(module)
-                exporter.finish()
-            finally:
-                exporter.report()
-            for fmt in FORMATS:
-                if fmt in formats:
-                    extension = "md" if fmt == "markdown" else fmt
-                    print(f'{fmt}: {args.output / ("course." + extension)}')
-            print(f'Offline HTML: {args.output / "index.html"}\nCoverage report: {args.output / "report.json"}')
-        finally:
-            if browser:
-                browser.close()
-
-
-if __name__ == "__main__":
-    try:
-        main()
-    except EOFError:
-        print("Input ended before login details were entered. Run interactively to enter your credentials.", file=sys.stderr)
-        sys.exit(1)
-    except (RuntimeError, ValueError, FileNotFoundError, PlaywrightTimeout) as exc:
-        print(f"Export stopped: {exc}", file=sys.stderr)
-        sys.exit(1)

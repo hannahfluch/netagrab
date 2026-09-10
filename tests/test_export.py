@@ -12,7 +12,8 @@ from PIL import Image
 from playwright.sync_api import sync_playwright
 from pypdf import PdfReader
 
-from netacad_pdf import Exporter, merge_pdfs, transcript, to_markdown, parse_args, output_directory, login, load_session
+from netagrab.exporter import Exporter, merge_pdfs, transcript, to_markdown, login, load_session
+from netagrab.cli import parse_args, output_directory
 
 
 class InputTest(unittest.TestCase):
@@ -45,13 +46,13 @@ class InputTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'another course'):
                 output_directory(args)
             args.output = None
-            with patch('netacad_pdf.Path', side_effect=lambda value: out if value == 'output' else Path(value)), redirect_stdout(io.StringIO()):
+            with patch('netagrab.cli.Path', side_effect=lambda value: out if value == 'output' else Path(value)), redirect_stdout(io.StringIO()):
                 separate = output_directory(args)
             self.assertEqual(separate.parent, out)
             self.assertTrue(separate.name.startswith('course-'))
 
     def test_missing_or_corrupt_session_starts_fresh(self):
-        with tempfile.TemporaryDirectory() as temp, patch('netacad_pdf.SESSION', Path(temp) / 'auth.json'):
+        with tempfile.TemporaryDirectory() as temp, patch('netagrab.exporter.SESSION', Path(temp) / 'auth.json'):
             self.assertIsNone(load_session())
             Path(temp, 'auth.json').write_text('not json')
             with redirect_stdout(io.StringIO()):
@@ -62,7 +63,7 @@ class ExportTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.playwright = sync_playwright().start()
-        cls.browser = cls.playwright.chromium.launch(executable_path=os.environ["CHROMIUM_PATH"])
+        cls.browser = cls.playwright.chromium.launch(executable_path=os.environ.get("CHROMIUM_PATH"))
 
     @classmethod
     def tearDownClass(cls):
@@ -71,7 +72,7 @@ class ExportTest(unittest.TestCase):
 
     def test_login_prompts_after_redirect_and_reuses_authenticated_page(self):
         course = 'https://www.netacad.com/launch?id=test-course'
-        with tempfile.TemporaryDirectory() as temp, patch('netacad_pdf.SESSION', Path(temp) / 'auth.json'):
+        with tempfile.TemporaryDirectory() as temp, patch('netagrab.exporter.SESSION', Path(temp) / 'auth.json'):
             context = self.browser.new_context()
             def respond(route):
                 if 'auth.netacad.com' in route.request.url:
