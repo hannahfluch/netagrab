@@ -2,19 +2,17 @@
 
 Download NetAcad courses as PDF, Markdown, or structured JSON for offline study.
 
-## Run
+## Run via Nix
 
 ```sh
-nix develop
-uv sync
-uv run netagrab
+nix run .#
 ```
 
 Without Nix, install uv, then run `uv sync` and `uv run playwright install chromium`.
 
 ```sh
 uv run netagrab                              # prompt for the course URL
-uv run netagrab 'COURSE_URL' --format all     # pdf, markdown, json, or all
+uv run netagrab --format all     # pdf, markdown, json, or all
 uv run netagrab --offline --format markdown json
 ```
 
@@ -28,10 +26,18 @@ included. Interactive activities use static extracts; external exams stay online
 
 ## Development
 
+Running: 
+
+```sh
+nix develop
+uv sync
+uv run netagrab
+```
+
+Testing:
+
 ```sh
 uv run python -m unittest discover -s tests -v
 uv build
 uv export --no-dev --no-emit-project --no-hashes --output-file requirements.txt
 ```
-
-Dependencies live in `pyproject.toml`; `uv.lock` and `requirements.txt` pin resolved versions.
